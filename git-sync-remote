@@ -1,5 +1,11 @@
 #!/bin/bash
 
+LOCAL_REPO=$(git rev-parse --show-toplevel)
+if [ -z "$LOCAL_REPO" ]; then
+#	echo "Unable to establish the top-level URL for the local repository"
+	exit 1
+fi 
+
 #TODO: SSH=GIT_SSH||which ssh
 SSH=$(which ssh)
 
@@ -31,45 +37,73 @@ if [ -z "$REMOTE_URL" ]; then
 	exit 1
 fi
 
-LOCAL_REPO=$(git rev-parse --show-toplevel)
-if [ -z "$LOCAL_REPO" ]; then
-	echo "Unable to establish the top-level URL for the local repository"
-	exit 1
-fi 
-
-REMOTE_REF=$(git config branch.$BRANCH.merge)
+# Figure out what the remote merge refspec is for the our branch
+REMOTE_REF=$(git config branch.$BRANCH.merge | sed -e 's/refs\/heads\///')
 # We now have the full refspec as it's known on the remote; may want to strip refs/heads/
 
+# Split out the remote hostname and relative path parts for ssh usage
 IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
 
+# Determine which branch is checked out remotely
 REMOTE_BRANCH=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git rev-parse --abbrev-ref HEAD)
 
-# echo "Remote has checked out branch: $REMOTE_BRANCH"
+#echo "Remote has checked out branch: $REMOTE_BRANCH"
 
-exit
+# Determine if the remote is dirty
+REMOTE_DIRTY=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH status --porcelain)
 
-# TODO: establish whether remote is clean or has local changes
-# if remote-branch != local-branch AND remote-dirty: ABORT OR WE WOULD LOSE REMOTE CHANGES (or stash?)
+if [ -n "$REMOTE_DIRTY" ] && [ $REMOTE_BRANCH != $REMOTE_REF ]; then
+	echo "Remote is on a different branch ($REMOTE_BRANCH) and has local changes; can't continue"
+	# Actually, we could just stash the changes on the remote. That's for version 2
+	exit 1
+fi
 
 # if remote-branch != local-branch checkout correct branch on remote
-# $SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git checkout $REMOTE_REF
+if [ $REMOTE_BRANCH != $REMOTE_REF ]; then
+	echo "Remote is on different branch ($REMOTE_BRANCH); switching to '$REMOTE_REF'"
+	$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-dir $REMOTE_PATH checkout $REMOTE_REF
+	# Do we need to re-check dirty? I don't think so right?
+fi
 
 # ** we are now on the same branch **
+
+LOCAL_DIRTY=$(git status --porcelain)
+
 LOCAL_SHA=$(git rev-parse $BRANCH)
-REMOTE_SHA=$(git ls-remote -h $REMOTE $REMOTE_REF)
+REMOTE_SHA=$(git ls-remote -h $REMOTE $REMOTE_REF | cut -f1)
 
-# if remote tip is ahead to local tip (so local tip is ancestor of remote tip): ABORT BECAUSE WE NEED TO PULL FIRST (or fast-forward, or stash-ff-stash-apply)
-# if remote tip is behind local tip: fast-forward remote (or stash-ff-stash-apply remote)
-# if remote tip and local tip have diverged: ABORT BECAUSE THIS IS TOO HARD FOR US
+echo "Local SHA is $LOCAL_SHA"
+echo "Remote SHA is $REMOTE_SHA"
 
-# ** we are now on the same commit **
+if [ $LOCAL_SHA != $REMOTE_SHA ]; then
+	if git-merge-base --is-ancestor $LOCAL_SHA $REMOTE_SHA ; then
+		echo "Remote is ahead of us; you should fetch, stash and fast-forward your local repo first"
+		exit 1
+	fi
+	if git-merge-base --is-ancestor $REMOTE_SHA $LOCAL_SHA ; then
+		echo "Remote is behind of us; we should probably remote-stash, push to, and fast-forward the remote to where we are"
+		exit 1
+	fi
+	echo "Remote is neither descendant nor ancestor; we've diverged. Fix it."
+	exit 1
+fi
 
-# TODO: if both we and remote are dirty, test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
+# ** we should now be on the same commit **
+
+if [ -n "$LOCAL_DIRTY" ] && [ -n "$REMOTE_DIRTY" ]; then
+	echo "Both local and remote are dirty; aborting as we could have diverged"
+	# we should to a dry-run rsync from remote to local to test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
+	exit 1
+fi
+
+if [ -n "$LOCAL_DIRTY" ]; then
+	echo "Rsyncing our local changes to the remote"
+	rsync --dry-run --verbose --archive $LOCAL_REPO $REMOTE_URL
 # TODO: if we are dirty, rsync push our dirtiness
+fi
 
 # ** we are now in sync, both for git and for filesystem
 
-echo "So, we want to sync $REPO with $URL"
-rsync --dry-run --verbose --archive $REPO $URL
+echo "We can now monitor $LOCAL_REPO for changes and sync them to $REMOTE_URL"
 
 

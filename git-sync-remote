@@ -91,16 +91,21 @@ fi
 
 # ** we should now be on the same commit **
 
-if [ -n "$LOCAL_DIRTY" ] && [ -n "$REMOTE_DIRTY" ]; then
-	echo "Both local and remote are dirty; aborting as we could have diverged"
-	# we should to a dry-run rsync from remote to local to test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
-	exit 1
-fi
-
-if [ -n "$LOCAL_DIRTY" ]; then
-	echo "Rsyncing our local changes to the remote"
-	rsync --dry-run --verbose --archive $LOCAL_REPO $REMOTE_URL
-# TODO: if we are dirty, rsync push our dirtiness
+if [ -n "$REMOTE_DIRTY" ]; then
+	if [ -z "$LOCAL_DIRTY" ]; then
+		echo "Remote is dirty, but local is clean; can't continue";
+		# Actually, we could easily stash the remote
+		exit 1;
+	else
+		echo "Both local and remote are dirty; aborting as we could have diverged"
+		# we should to a dry-run rsync from remote to local to test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
+		exit 1
+	fi
+else
+	if [ -n "$LOCAL_DIRTY" ]; then
+		echo "Rsyncing our local changes to the remote"
+		rsync --dry-run --verbose --archive $LOCAL_REPO $REMOTE_URL
+	fi
 fi
 
 # ** we are now in sync, both for git and for filesystem

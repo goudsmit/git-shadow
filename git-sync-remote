@@ -15,20 +15,20 @@ if [ -z "$FSWATCH" ]; then
 	exit 1
 fi
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ -z "$BRANCH" ]; then
+LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ -z "$LOCAL_BRANCH" ]; then
 	echo "Unable to establish the currently checked out branch"
 	exit 1
 fi
 
 REMOTE=$1
 if [ -z "$REMOTE" ]; then
-	REMOTE=$(git config branch.$BRANCH.remote)
+	REMOTE=$(git config branch.$LOCAL_BRANCH.remote)
 	if [ -z "$REMOTE" ]; then
 		echo "You did not specify a remote to use and unable to establish default remote for this branch"
 		exit 1
 	fi
-#	echo "Using default remote '$REMOTE' for current branch '$BRANCH'"
+#	echo "Using default remote '$REMOTE' for current branch '$LOCAL_BRANCH'"
 fi
 
 REMOTE_URL=$(git config remote.$REMOTE.url)
@@ -38,7 +38,7 @@ if [ -z "$REMOTE_URL" ]; then
 fi
 
 # Figure out what the remote merge refspec is for the our branch
-REMOTE_REF=$(git config branch.$BRANCH.merge | sed -e 's/refs\/heads\///')
+REMOTE_REF=$(git config branch.$LOCAL_BRANCH.merge | sed -e 's/refs\/heads\///')
 # We now have the full refspec as it's known on the remote; may want to strip refs/heads/
 
 # Split out the remote hostname and relative path parts for ssh usage
@@ -69,19 +69,20 @@ fi
 
 LOCAL_DIRTY=$(git status --porcelain)
 
-LOCAL_SHA=$(git rev-parse $BRANCH)
+LOCAL_SHA=$(git rev-parse $LOCAL_BRANCH)
 REMOTE_SHA=$(git ls-remote -h $REMOTE $REMOTE_REF | cut -f1)
 
 echo "Local SHA is $LOCAL_SHA"
 echo "Remote SHA is $REMOTE_SHA"
 
 if [ $LOCAL_SHA != $REMOTE_SHA ]; then
-	if git-merge-base --is-ancestor $LOCAL_SHA $REMOTE_SHA ; then
+	if git merge-base --is-ancestor $LOCAL_SHA $REMOTE_SHA ; then
 		echo "Remote is ahead of us; you should fetch, stash and fast-forward your local repo first"
 		exit 1
 	fi
-	if git-merge-base --is-ancestor $REMOTE_SHA $LOCAL_SHA ; then
+	if git merge-base --is-ancestor $REMOTE_SHA $LOCAL_SHA ; then
 		echo "Remote is behind of us; we should probably remote-stash, push to, and fast-forward the remote to where we are"
+		git push --quiet $REMOTE $LOCAL_BRANCH
 		exit 1
 	fi
 	echo "Remote is neither descendant nor ancestor; we've diverged. Fix it."

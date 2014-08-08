@@ -1,0 +1,75 @@
+#!/bin/bash
+
+#TODO: SSH=GIT_SSH||which ssh
+SSH=$(which ssh)
+
+FSWATCH=$(which fswatch)
+if [ -z "$FSWATCH" ]; then
+	echo "You must have fswatch installed to use git-sync-remote"
+	exit 1
+fi
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ -z "$BRANCH" ]; then
+	echo "Unable to establish the currently checked out branch"
+	exit 1
+fi
+
+REMOTE=$1
+if [ -z "$REMOTE" ]; then
+	REMOTE=$(git config branch.$BRANCH.remote)
+	if [ -z "$REMOTE" ]; then
+		echo "You did not specify a remote to use and unable to establish default remote for this branch"
+		exit 1
+	fi
+#	echo "Using default remote '$REMOTE' for current branch '$BRANCH'"
+fi
+
+REMOTE_URL=$(git config remote.$REMOTE.url)
+if [ -z "$REMOTE_URL" ]; then
+	echo "Unable to establish the URL for remote '$REMOTE'"
+	exit 1
+fi
+
+LOCAL_REPO=$(git rev-parse --show-toplevel)
+if [ -z "$LOCAL_REPO" ]; then
+	echo "Unable to establish the top-level URL for the local repository"
+	exit 1
+fi 
+
+REMOTE_REF=$(git config branch.$BRANCH.merge)
+# We now have the full refspec as it's known on the remote; may want to strip refs/heads/
+
+IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
+
+REMOTE_BRANCH=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git rev-parse --abbrev-ref HEAD)
+
+# echo "Remote has checked out branch: $REMOTE_BRANCH"
+
+exit
+
+# TODO: establish whether remote is clean or has local changes
+# if remote-branch != local-branch AND remote-dirty: ABORT OR WE WOULD LOSE REMOTE CHANGES (or stash?)
+
+# if remote-branch != local-branch checkout correct branch on remote
+# $SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git checkout $REMOTE_REF
+
+# ** we are now on the same branch **
+LOCAL_SHA=$(git rev-parse $BRANCH)
+REMOTE_SHA=$(git ls-remote -h $REMOTE $REMOTE_REF)
+
+# if remote tip is ahead to local tip (so local tip is ancestor of remote tip): ABORT BECAUSE WE NEED TO PULL FIRST (or fast-forward, or stash-ff-stash-apply)
+# if remote tip is behind local tip: fast-forward remote (or stash-ff-stash-apply remote)
+# if remote tip and local tip have diverged: ABORT BECAUSE THIS IS TOO HARD FOR US
+
+# ** we are now on the same commit **
+
+# TODO: if both we and remote are dirty, test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
+# TODO: if we are dirty, rsync push our dirtiness
+
+# ** we are now in sync, both for git and for filesystem
+
+echo "So, we want to sync $REPO with $URL"
+rsync --dry-run --verbose --archive $REPO $URL
+
+

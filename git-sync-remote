@@ -2,7 +2,7 @@
 
 LOCAL_REPO=$(git rev-parse --show-toplevel)
 if [ -z "$LOCAL_REPO" ]; then
-#	echo "Unable to establish the top-level URL for the local repository"
+#	echo "fatal: Unable to establish the top-level URL for the local repository"
 	exit 1
 fi 
 
@@ -11,13 +11,13 @@ SSH=$(which ssh)
 
 FSWATCH=$(which fswatch)
 if [ -z "$FSWATCH" ]; then
-	echo "You must have fswatch installed to use git-sync-remote"
+	echo "fatal: You must have fswatch installed to use git-sync-remote"
 	exit 1
 fi
 
 LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ -z "$LOCAL_BRANCH" ]; then
-	echo "Unable to establish the currently checked out branch"
+	echo "fatal: Unable to establish the currently checked out branch"
 	exit 1
 fi
 
@@ -25,7 +25,7 @@ REMOTE=$1
 if [ -z "$REMOTE" ]; then
 	REMOTE=$(git config branch.$LOCAL_BRANCH.remote)
 	if [ -z "$REMOTE" ]; then
-		echo "You did not specify a remote to use and unable to establish default remote for this branch"
+		echo "fatal: You did not specify a remote to use and unable to establish default remote for this branch"
 		exit 1
 	fi
 #	echo "Using default remote '$REMOTE' for current branch '$LOCAL_BRANCH'"
@@ -33,7 +33,7 @@ fi
 
 REMOTE_URL=$(git config remote.$REMOTE.url)
 if [ -z "$REMOTE_URL" ]; then
-	echo "Unable to establish the URL for remote '$REMOTE'"
+	echo "fatal: Unable to establish the URL for remote '$REMOTE'"
 	exit 1
 fi
 
@@ -53,7 +53,7 @@ REMOTE_BRANCH=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git rev-parse --ab
 REMOTE_DIRTY=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH status --porcelain)
 
 if [ -n "$REMOTE_DIRTY" ] && [ $REMOTE_BRANCH != $REMOTE_REF ]; then
-	echo "Remote is on a different branch ($REMOTE_BRANCH) and has local changes; can't continue"
+	echo "fatal: Remote is on a different branch ($REMOTE_BRANCH) and has local changes; can't continue"
 	# Actually, we could just stash the changes on the remote. That's for version 2
 	exit 1
 fi
@@ -77,15 +77,15 @@ echo "Remote SHA is $REMOTE_SHA"
 
 if [ $LOCAL_SHA != $REMOTE_SHA ]; then
 	if git merge-base --is-ancestor $LOCAL_SHA $REMOTE_SHA ; then
-		echo "Remote is ahead of us; you should fetch, stash and fast-forward your local repo first"
+		echo "fatal: Local is behind remote; you should fetch, stash and fast-forward your local repo first"
 		exit 1
 	fi
 	if git merge-base --is-ancestor $REMOTE_SHA $LOCAL_SHA ; then
-		echo "Remote is behind of us; we should probably remote-stash, push to, and fast-forward the remote to where we are"
+		echo "fatal: Remote is behind of us; we should probably remote-stash, push to, and fast-forward the remote to where we are"
 		git push --quiet $REMOTE $LOCAL_BRANCH
 		exit 1
 	fi
-	echo "Remote is neither descendant nor ancestor; we've diverged. Fix it."
+	echo "fatal: Remote is neither descendant nor ancestor; we've diverged. Fix it."
 	exit 1
 fi
 
@@ -93,11 +93,11 @@ fi
 
 if [ -n "$REMOTE_DIRTY" ]; then
 	if [ -z "$LOCAL_DIRTY" ]; then
-		echo "Remote is dirty, but local is clean; can't continue";
+		echo "fatal: Remote has uncommitted changes or untracked files, but local is clean; can't continue";
 		# Actually, we could easily stash the remote
 		exit 1;
 	else
-		echo "Both local and remote are dirty; aborting as we could have diverged"
+		echo "fatal: Both local and remote have uncommitted changes or untracke files aborting as we could have diverged"
 		# we should to a dry-run rsync from remote to local to test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
 		exit 1
 	fi

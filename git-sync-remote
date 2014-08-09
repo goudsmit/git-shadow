@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# should have a --sync mode which does a local to remote sync
+# should have a --process mode which takes output from --watch and calls rsync when appropriate
+# should have a --watch mode which actually sets up fswatch
+
+RSYNC_OPTS="-r -l -p -g -o -c -I --inplace --exclude=.git/"
+
 LOCAL_REPO=$(git rev-parse --show-toplevel)
 if [ -z "$LOCAL_REPO" ]; then
 #	echo "fatal: Unable to establish the top-level URL for the local repository"
@@ -104,7 +110,7 @@ if [ -n "$REMOTE_DIRTY" ]; then
 else
 	if [ -n "$LOCAL_DIRTY" ]; then
 		echo "Rsyncing our local changes to the remote"
-		REMOTE_ONLY=$(rsync --dry-run -r -l -p -g -o -c -I --itemize-changes --exclude=.git/ $REMOTE_URL $LOCAL_REPO)
+		REMOTE_ONLY=$(rsync --dry-run $RSYNC_OPTS $REMOTE_URL $LOCAL_REPO)
 		if [ -n "$REMOTE_ONLY" ]; then
 			echo "Both local and remote are dirty, and remote has changes we don't; DISCARDING THEM"
 			# because stash doesn't seem to work
@@ -116,7 +122,7 @@ fi
 
 if [ -n "$LOCAL_DIRTY" ]; then
 	echo "Rsyncing our local changes to the remote"
-	rsync -r -l -p -g -o -c -I --inplace --exclude=.git/ $LOCAL_REPO $REMOTE_URL
+	rsync $RSYNC_OPTS $LOCAL_REPO $REMOTE_URL
 fi
 
 # ** we are now in sync, both for git and for filesystem

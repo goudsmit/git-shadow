@@ -61,7 +61,7 @@ fi
 # if remote-branch != local-branch checkout correct branch on remote
 if [ $REMOTE_BRANCH != $REMOTE_REF ]; then
 	echo "Remote is on different branch ($REMOTE_BRANCH); switching to '$REMOTE_REF'"
-	$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-dir $REMOTE_PATH checkout $REMOTE_REF
+	$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH checkout $REMOTE_REF
 	# Do we need to re-check dirty? I don't think so right?
 fi
 
@@ -72,8 +72,8 @@ LOCAL_DIRTY=$(git status --porcelain)
 LOCAL_SHA=$(git rev-parse $LOCAL_BRANCH)
 REMOTE_SHA=$(git ls-remote -h $REMOTE $REMOTE_REF | cut -f1)
 
-echo "Local SHA is $LOCAL_SHA"
-echo "Remote SHA is $REMOTE_SHA"
+#echo "Local SHA is $LOCAL_SHA"
+#echo "Remote SHA is $REMOTE_SHA"
 
 if [ $LOCAL_SHA != $REMOTE_SHA ]; then
 	if git merge-base --is-ancestor $LOCAL_SHA $REMOTE_SHA ; then
@@ -104,12 +104,25 @@ if [ -n "$REMOTE_DIRTY" ]; then
 else
 	if [ -n "$LOCAL_DIRTY" ]; then
 		echo "Rsyncing our local changes to the remote"
-		rsync --dry-run --verbose --archive $LOCAL_REPO $REMOTE_URL
+		REMOTE_ONLY=$(rsync --dry-run -r -l -p -g -o -c -I --itemize-changes --exclude=.git/ $REMOTE_URL $LOCAL_REPO)
+		if [ -n "$REMOTE_ONLY" ]; then
+			echo "Both local and remote are dirty, and remote has changes we don't; DISCARDING THEM"
+			# because stash doesn't seem to work
+			#$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH stash
+			$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH reset --hard --quiet
+		fi
 	fi
+fi
+
+if [ -n "$LOCAL_DIRTY" ]; then
+	echo "Rsyncing our local changes to the remote"
+	rsync -r -l -p -g -o -c -I --inplace --exclude=.git/ $LOCAL_REPO $REMOTE_URL
 fi
 
 # ** we are now in sync, both for git and for filesystem
 
-echo "We can now monitor $LOCAL_REPO for changes and sync them to $REMOTE_URL"
+# built exclude patterns from .gitignore for rsyncs and for fswatch
 
+echo "We can now monitor $LOCAL_REPO for changes and sync them to $REMOTE_URL"
+$FSWATCH $LOCAL_REPO
 

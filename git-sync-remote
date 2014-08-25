@@ -1,16 +1,13 @@
 #!/bin/bash
 
 # should have a --sync mode which does a local to remote sync
-# should have a --process mode which takes output from --watch and calls rsync when appropriate
-# should have a --watch mode which actually sets up fswatch
 
-RSYNC_OPTS="-r -l -p -g -o -c -I --inplace --exclude=.git/"
+#TODO: need a post-commit hook that aligns checkouts (push -f && reset --hard && enable-sync)
+#TODO: would want a 'pre-checkout' hook, that disables syncing but that doesn't exist; maybe detect different local SHA in --process?
+#TODO: need a post-checkout hook that aligns checkouts (push -f && reset --hard && enable-sync)
 
-LOCAL_REPO=$(git rev-parse --show-toplevel)
-if [ -z "$LOCAL_REPO" ]; then
-#	echo "fatal: Unable to establish the top-level URL for the local repository"
-	exit 1
-fi 
+RSYNC_OPTS="-r -l -p -g -o -c --inplace --exclude=.git/"
+FSWATCH_OPTS="-0 -x -n -E -e \.subl.*\.tmp -e \.git"
 
 #TODO: SSH=GIT_SSH||which ssh
 SSH=$(which ssh)
@@ -21,20 +18,77 @@ if [ -z "$FSWATCH" ]; then
 	exit 1
 fi
 
+function notify {
+#	osascript -e "display notification \"$2\" with title \"$1\" sound name \"Morse\""
+	osascript -e "display notification \"$2\" with title \"$1\""
+			
+}
+
+function process_changes {
+	echo "Started in process mode"
+	while read -d "" changed_file event_mask ; do
+		[ -e "$SEMAPHORE" ] || continue	
+		relative_file=${changed_file/#$LOCAL_REPO\/};
+		echo -n "Syncing $relative_file..."
+		rsync $RSYNC_OPTS --files-from=- $LOCAL_REPO/ $REMOTE_URL <<<"$relative_file"
+		echo " Done."
+		basename=$(basename "$relative_file")
+		notify "Sync complete" "$basename"
+#		afplay "/System/Library/Sounds/Morse.aiff"
+		#TODO: be smart based on event_mask
+	done
+}
+
+function watch_changes {
+#	>&2 echo "Started in watch mode"
+	touch $SEMAPHORE
+	$FSWATCH $FSWATCH_OPTS $LOCAL_REPO
+	rm $SEMAPHORE
+}
+
+# Parse arguments, and call & exit the 'modes'
+while [[ $#>0 ]]; do
+	key="$1"
+	shift
+	case $key in
+		--watch)
+		watch_changes
+		exit 0
+		;;
+		--process)
+		process_changes
+		exit 0
+		;;
+		*)
+		REMOTE="$key"
+		echo "Using remote '$REMOTE'"
+		;;
+	esac
+done
+
+LOCAL_REPO=$(git rev-parse --show-toplevel)
+if [ -z "$LOCAL_REPO" ]; then
+#	echo "fatal: Unable to establish the top-level URL for the local repository"
+	exit 1
+fi
+
+SEMAPHORE_DIR="$LOCAL_REPO/.git/sync-remote"
+mkdir -p $SEMAPHORE_DIR
+SEMAPHORE="$LOCAL_REPO/.git/sync-remote/active"
+
 LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ -z "$LOCAL_BRANCH" ]; then
 	echo "fatal: Unable to establish the currently checked out branch"
 	exit 1
 fi
 
-REMOTE=$1
 if [ -z "$REMOTE" ]; then
 	REMOTE=$(git config branch.$LOCAL_BRANCH.remote)
 	if [ -z "$REMOTE" ]; then
 		echo "fatal: You did not specify a remote to use and unable to establish default remote for this branch"
 		exit 1
 	fi
-#	echo "Using default remote '$REMOTE' for current branch '$LOCAL_BRANCH'"
+	echo "Using default remote '$REMOTE' for current branch '$LOCAL_BRANCH'"
 fi
 
 REMOTE_URL=$(git config remote.$REMOTE.url)
@@ -50,13 +104,19 @@ REMOTE_REF=$(git config branch.$LOCAL_BRANCH.merge | sed -e 's/refs\/heads\///')
 # Split out the remote hostname and relative path parts for ssh usage
 IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
 
-# Determine which branch is checked out remotely
-REMOTE_BRANCH=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git rev-parse --abbrev-ref HEAD)
+# Setup a shortcut to call git commands remotely
+REMOTE_GIT="$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH"
+echo "Will use '$REMOTE_GIT' to execute remote git commands"
 
-#echo "Remote has checked out branch: $REMOTE_BRANCH"
+# Determine which branch is checked out remotely
+echo -n "Determining work-tree checkout on $REMOTE..."
+REMOTE_BRANCH=$($REMOTE_GIT rev-parse --abbrev-ref HEAD)
+echo " HEAD is on '$REMOTE_BRANCH'"
 
 # Determine if the remote is dirty
-REMOTE_DIRTY=$($SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH status --porcelain)
+echo -n "Determining work-tree status on $REMOTE..."
+REMOTE_DIRTY=$($REMOTE_GIT status --porcelain | cut -d' ' -f2-)
+echo " Dirty: $REMOTE_DIRTY"
 
 if [ -n "$REMOTE_DIRTY" ] && [ $REMOTE_BRANCH != $REMOTE_REF ]; then
 	echo "fatal: Remote is on a different branch ($REMOTE_BRANCH) and has local changes; can't continue"
@@ -67,7 +127,7 @@ fi
 # if remote-branch != local-branch checkout correct branch on remote
 if [ $REMOTE_BRANCH != $REMOTE_REF ]; then
 	echo "Remote is on different branch ($REMOTE_BRANCH); switching to '$REMOTE_REF'"
-	$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH checkout $REMOTE_REF
+	$REMOTE_GIT checkout $REMOTE_REF
 	# Do we need to re-check dirty? I don't think so right?
 fi
 
@@ -82,47 +142,50 @@ REMOTE_SHA=$(git ls-remote -h $REMOTE $REMOTE_REF | cut -f1)
 #echo "Remote SHA is $REMOTE_SHA"
 
 if [ $LOCAL_SHA != $REMOTE_SHA ]; then
+	echo "Same branch, but on different commits; figuring out what to do..."
 	if git merge-base --is-ancestor $LOCAL_SHA $REMOTE_SHA ; then
 		echo "fatal: Local is behind remote; you should fetch, stash and fast-forward your local repo first"
+		# git fetch $REMOTE
+		# git pull --ff-only $REMOTE $LOCAL_BRANCH
 		exit 1
-	fi
-	if git merge-base --is-ancestor $REMOTE_SHA $LOCAL_SHA ; then
+	elif git merge-base --is-ancestor $REMOTE_SHA $LOCAL_SHA ; then
+		# if remote dirty, we would probably want to stash, push, fast-forward and stash apply
+		# if remote clean, we would just push and fast-forward
 		echo "fatal: Remote is behind of us; we should probably remote-stash, push to, and fast-forward the remote to where we are"
 		git push --quiet $REMOTE $LOCAL_BRANCH
+		$REMOTE_GIT checkout -f
+	else
+		echo "fatal: We've diverged; remote is neither descendant nor ancestor. You probably rebased on remote or local. Fix it."
 		exit 1
 	fi
-	echo "fatal: Remote is neither descendant nor ancestor; we've diverged. Fix it."
-	exit 1
 fi
 
 # ** we should now be on the same commit **
 
+# should use git commands to find dirty files on both side for faster rsync
+#[ggoudsmit@goldbook main]$ rsync -r -l -p -g -o -c --inplace --exclude=.git/ kvmoff:/usr/local/git_tree/main/ ~/git_tree/main
+#[ggoudsmit@goldbook main]$ rsync -r -l -p -g -o -c --inplace --exclude=.git/ kvmoff:/usr/local/git_tree/main/ ~/git_tree/main
+
 if [ -n "$REMOTE_DIRTY" ]; then
 	if [ -z "$LOCAL_DIRTY" ]; then
-		echo "fatal: Remote has uncommitted changes or untracked files, but local is clean; can't continue";
-		# Actually, we could easily stash the remote
-		exit 1;
+		# Simple; only dirtiness is remote, so just get that stuff here.
+		echo "Syncing remote uncommitted changes and/or untracked files to local"
+		$REMOTE_GIT status --porcelain | cut -d ' ' -f 2- | rsync $RSYNC_OPTS --include-from=- $REMOTE_URL/ $LOCAL_REPO
 	else
-		echo "fatal: Both local and remote have uncommitted changes or untracke files aborting as we could have diverged"
-		# we should to a dry-run rsync from remote to local to test for differences with rsync: ABORT IF ANY BECAUSE WE HAVE DIVERGED (or stash-remote, rsync push, stash-apply and retest)
-		exit 1
-	fi
-else
-	if [ -n "$LOCAL_DIRTY" ]; then
-		echo "Rsyncing our local changes to the remote"
-		REMOTE_ONLY=$(rsync --dry-run $RSYNC_OPTS $REMOTE_URL $LOCAL_REPO)
-		if [ -n "$REMOTE_ONLY" ]; then
-			echo "Both local and remote are dirty, and remote has changes we don't; DISCARDING THEM"
-			# because stash doesn't seem to work
-			#$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH stash
-			$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH reset --hard --quiet
-		fi
+		# Complex; changes in 2 places, and they /might/ overlap...
+		echo "Both local and remote have uncommitted changes or untracked files; IGNORING REMOTE CHANGES (YMMV)"
+#		REMOTE_ONLY=$(rsync --dry-run $RSYNC_OPTS $REMOTE_URL $LOCAL_REPO)
+#		if [ -n "$REMOTE_ONLY"]; then
+#			echo "fatal: Local and remote have differing local changes or untracked; aborting as we have diverged"
+#			rsync --dry-run --verbose -O $RSYNC_OPTS $REMOTE_URL $LOCAL_REPO
+#			exit 1
+#		fi
 	fi
 fi
 
 if [ -n "$LOCAL_DIRTY" ]; then
-	echo "Rsyncing our local changes to the remote"
-	rsync $RSYNC_OPTS $LOCAL_REPO $REMOTE_URL
+	echo "Syncing local uncommitted changes and/or untracked files to the remote..."
+	rsync $RSYNC_OPTS $LOCAL_REPO/ $REMOTE_URL
 fi
 
 # ** we are now in sync, both for git and for filesystem
@@ -130,5 +193,8 @@ fi
 # built exclude patterns from .gitignore for rsyncs and for fswatch
 
 echo "We can now monitor $LOCAL_REPO for changes and sync them to $REMOTE_URL"
-$FSWATCH $LOCAL_REPO
+export LOCAL_REPO
+export REMOTE_URL
+export SEMAPHORE
+$0 --watch | $0 --process
 

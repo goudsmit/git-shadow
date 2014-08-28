@@ -101,9 +101,19 @@ fi
 REMOTE_REF=$(git config branch.$LOCAL_BRANCH.merge | sed -e 's/refs\/heads\///')
 # We now have the full refspec as it's known on the remote; may want to strip refs/heads/
 
+# First we try to ram the URL into a format we're confortable with
+REMOTE_URL=${REMOTE_URL%\/.git};  # remove possible .git at the end
+REMOTE_URL=${REMOTE_URL#ssh:\/\/};  # remove possible ssh protocol statement at the beginning
+REMOTE_URL=${REMOTE_URL#http:\/\/};  # remove possible http protocol statement at the beginning
+REMOTE_URL=${REMOTE_URL#https:\/\/};  # remove possible https protocol statement at the beginning
+
 # Split out the remote hostname and relative path parts for ssh usage
 IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
 
+if [ -z $REMOTE_PATH]; then
+    IFS=/ read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
+    REMOTE_PATH="/$REMOTE_PATH"
+fi
 # Setup a shortcut to call git commands remotely
 REMOTE_GIT="$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH"
 echo "Will use '$REMOTE_GIT' to execute remote git commands"
@@ -185,7 +195,7 @@ fi
 
 if [ -n "$LOCAL_DIRTY" ]; then
 	echo "Syncing local uncommitted changes and/or untracked files to the remote..."
-	rsync $RSYNC_OPTS $LOCAL_REPO/ $REMOTE_URL
+	rsync $RSYNC_OPTS $LOCAL_REPO/ $REMOTE_HOST:$REMOTE_PATH
 fi
 
 # ** we are now in sync, both for git and for filesystem

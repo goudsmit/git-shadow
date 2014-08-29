@@ -30,7 +30,8 @@ function process_changes {
 		[ -e "$SEMAPHORE" ] || continue	
 		relative_file=${changed_file/#$LOCAL_REPO\/};
 		echo -n "Syncing $relative_file..."
-		rsync $RSYNC_OPTS --files-from=- $LOCAL_REPO/ $REMOTE_URL <<<"$relative_file"
+        echo -n "[rsync $RSYNC_OPTS --files-from=- $LOCAL_REPO/ $REMOTE_HOST:$REMOTE_PATH]"
+		rsync $RSYNC_OPTS --files-from=- $LOCAL_REPO/ $REMOTE_HOST:$REMOTE_PATH <<<"$relative_file"
 		echo " Done."
 		basename=$(basename "$relative_file")
 		notify "Sync complete" "$basename"
@@ -44,6 +45,66 @@ function watch_changes {
 	touch $SEMAPHORE
 	$FSWATCH $FSWATCH_OPTS $LOCAL_REPO
 	rm $SEMAPHORE
+}
+
+function initialize_confs {
+    LOCAL_REPO=$(git rev-parse --show-toplevel)
+    if [ -z "$LOCAL_REPO" ]; then
+    #   echo "fatal: Unable to establish the top-level URL for the local repository"
+        exit 1
+    fi
+
+    SEMAPHORE_DIR="$LOCAL_REPO/.git/sync-remote"
+    mkdir -p $SEMAPHORE_DIR
+    SEMAPHORE="$LOCAL_REPO/.git/sync-remote/active"
+
+    LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if [ -z "$LOCAL_BRANCH" ]; then
+        echo "fatal: Unable to establish the currently checked out branch"
+        exit 1
+    fi
+
+    if [ -z "$REMOTE" ]; then
+        REMOTE=$(git config branch.$LOCAL_BRANCH.remote)
+        if [ -z "$REMOTE" ]; then
+            echo "fatal: You did not specify a remote to use and unable to establish default remote for this branch"
+            exit 1
+        fi
+        echo "Using default remote '$REMOTE' for current branch '$LOCAL_BRANCH'"
+    fi
+
+    REMOTE_URL=$(git config remote.$REMOTE.url)
+    if [ -z "$REMOTE_URL" ]; then
+        echo "fatal: Unable to establish the URL for remote '$REMOTE'"
+        exit 1
+    fi
+
+    # Figure out what the remote merge refspec is for the our branch
+    REMOTE_REF=$(git config branch.$LOCAL_BRANCH.merge | sed -e 's/refs\/heads\///')
+    # We now have the full refspec as it's known on the remote; may want to strip refs/heads/
+
+    # First we try to ram the URL into a format we're confortable with
+    REMOTE_URL=${REMOTE_URL%\/.git};  # remove possible .git at the end
+    REMOTE_URL=${REMOTE_URL#ssh:\/\/};  # remove possible ssh protocol statement at the beginning
+    REMOTE_URL=${REMOTE_URL#http:\/\/};  # remove possible http protocol statement at the beginning
+    REMOTE_URL=${REMOTE_URL#https:\/\/};  # remove possible https protocol statement at the beginning
+
+    # Split out the remote hostname and relative path parts for ssh usage
+    IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
+
+    if [ -z $REMOTE_PATH]; then
+        IFS=/ read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
+        REMOTE_PATH="/$REMOTE_PATH"
+    fi
+    # Setup a shortcut to call git commands remotely
+    REMOTE_GIT="$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH"
+    echo "Will use '$REMOTE_GIT' to execute remote git commands"
+
+    # Determine which branch is checked out remotely
+    echo -n "Determining work-tree checkout on $REMOTE..."
+    REMOTE_BRANCH=$($REMOTE_GIT rev-parse --abbrev-ref HEAD)
+    echo " HEAD is on '$REMOTE_BRANCH'"
+
 }
 
 # Parse arguments, and call & exit the 'modes'
@@ -66,63 +127,7 @@ while [[ $#>0 ]]; do
 	esac
 done
 
-LOCAL_REPO=$(git rev-parse --show-toplevel)
-if [ -z "$LOCAL_REPO" ]; then
-#	echo "fatal: Unable to establish the top-level URL for the local repository"
-	exit 1
-fi
-
-SEMAPHORE_DIR="$LOCAL_REPO/.git/sync-remote"
-mkdir -p $SEMAPHORE_DIR
-SEMAPHORE="$LOCAL_REPO/.git/sync-remote/active"
-
-LOCAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ -z "$LOCAL_BRANCH" ]; then
-	echo "fatal: Unable to establish the currently checked out branch"
-	exit 1
-fi
-
-if [ -z "$REMOTE" ]; then
-	REMOTE=$(git config branch.$LOCAL_BRANCH.remote)
-	if [ -z "$REMOTE" ]; then
-		echo "fatal: You did not specify a remote to use and unable to establish default remote for this branch"
-		exit 1
-	fi
-	echo "Using default remote '$REMOTE' for current branch '$LOCAL_BRANCH'"
-fi
-
-REMOTE_URL=$(git config remote.$REMOTE.url)
-if [ -z "$REMOTE_URL" ]; then
-	echo "fatal: Unable to establish the URL for remote '$REMOTE'"
-	exit 1
-fi
-
-# Figure out what the remote merge refspec is for the our branch
-REMOTE_REF=$(git config branch.$LOCAL_BRANCH.merge | sed -e 's/refs\/heads\///')
-# We now have the full refspec as it's known on the remote; may want to strip refs/heads/
-
-# First we try to ram the URL into a format we're confortable with
-REMOTE_URL=${REMOTE_URL%\/.git};  # remove possible .git at the end
-REMOTE_URL=${REMOTE_URL#ssh:\/\/};  # remove possible ssh protocol statement at the beginning
-REMOTE_URL=${REMOTE_URL#http:\/\/};  # remove possible http protocol statement at the beginning
-REMOTE_URL=${REMOTE_URL#https:\/\/};  # remove possible https protocol statement at the beginning
-
-# Split out the remote hostname and relative path parts for ssh usage
-IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
-
-if [ -z $REMOTE_PATH]; then
-    IFS=/ read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
-    REMOTE_PATH="/$REMOTE_PATH"
-fi
-# Setup a shortcut to call git commands remotely
-REMOTE_GIT="$SSH $REMOTE_HOST git --git-dir $REMOTE_PATH/.git --work-tree $REMOTE_PATH"
-echo "Will use '$REMOTE_GIT' to execute remote git commands"
-
-# Determine which branch is checked out remotely
-echo -n "Determining work-tree checkout on $REMOTE..."
-REMOTE_BRANCH=$($REMOTE_GIT rev-parse --abbrev-ref HEAD)
-echo " HEAD is on '$REMOTE_BRANCH'"
-
+initialize_confs
 # Determine if the remote is dirty
 echo -n "Determining work-tree status on $REMOTE..."
 REMOTE_DIRTY=$($REMOTE_GIT status --porcelain | cut -d' ' -f2-)
@@ -180,7 +185,7 @@ if [ -n "$REMOTE_DIRTY" ]; then
 	if [ -z "$LOCAL_DIRTY" ]; then
 		# Simple; only dirtiness is remote, so just get that stuff here.
 		echo "Syncing remote uncommitted changes and/or untracked files to local"
-		$REMOTE_GIT status --porcelain | cut -d ' ' -f 2- | rsync $RSYNC_OPTS --include-from=- $REMOTE_URL/ $LOCAL_REPO
+		$REMOTE_GIT status --porcelain | cut -d ' ' -f 2- | rsync $RSYNC_OPTS --include-from=- $REMOTE_HOST:$REMOTE_PATH/ $LOCAL_REPO
 	else
 		# Complex; changes in 2 places, and they /might/ overlap...
 		echo "Both local and remote have uncommitted changes or untracked files; IGNORING REMOTE CHANGES (YMMV)"
@@ -202,9 +207,11 @@ fi
 
 # built exclude patterns from .gitignore for rsyncs and for fswatch
 
-echo "We can now monitor $LOCAL_REPO for changes and sync them to $REMOTE_URL"
+echo "We can now monitor $LOCAL_REPO for changes and sync them to $REMOTE_HOST:$REMOTE_PATH"
 export LOCAL_REPO
 export REMOTE_URL
+export REMOTE_PATH
+export REMOTE_HOST
 export SEMAPHORE
 $0 --watch | $0 --process
 

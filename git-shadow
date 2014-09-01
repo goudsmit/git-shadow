@@ -92,7 +92,7 @@ function initialize_confs {
     # Split out the remote hostname and relative path parts for ssh usage
     IFS=: read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
 
-    if [ -z $REMOTE_PATH]; then
+    if [ -z $REMOTE_PATH ]; then
         IFS=/ read REMOTE_HOST REMOTE_PATH <<<"$REMOTE_URL"
         REMOTE_PATH="/$REMOTE_PATH"
     fi
